@@ -1,0 +1,131 @@
+name: build
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.12
+      - name: Create project files
+        run: |
+          mkdir -p proj/src/main/java/com/example/playerlod/mixin proj/src/main/resources
+          cd proj
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2G
+          minecraft_version=1.21.4
+          yarn_mappings=1.21.4+build.8
+          loader_version=0.16.10
+          fabric_version=0.119.2+1.21.4
+          mod_version=1.0.0
+          maven_group=com.example
+          archives_base_name=playerlod
+          EOF
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  maven { url = 'https://maven.fabricmc.net/' }
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          EOF
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'fabric-loom' version '1.9-SNAPSHOT'
+          }
+          version = project.mod_version
+          group = project.maven_group
+          base { archivesName = project.archives_base_name }
+          dependencies {
+              minecraft "com.mojang:minecraft:${project.minecraft_version}"
+              mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+              modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+              modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+          }
+          processResources {
+              inputs.property "version", project.version
+              filesMatching("fabric.mod.json") {
+                  expand "version": inputs.properties.version
+              }
+          }
+          tasks.withType(JavaCompile).configureEach {
+              it.options.release = 21
+          }
+          java {
+              sourceCompatibility = JavaVersion.VERSION_21
+              targetCompatibility = JavaVersion.VERSION_21
+          }
+          EOF
+          cat > src/main/resources/fabric.mod.json <<'EOF'
+          {
+            "schemaVersion": 1,
+            "id": "playerlod",
+            "version": "${version}",
+            "name": "Player LOD",
+            "description": "Simplifies far player models to improve FPS.",
+            "license": "MIT",
+            "environment": "client",
+            "mixins": ["playerlod.mixins.json"],
+            "depends": {
+              "fabricloader": ">=0.16.0",
+              "minecraft": "~1.21.4",
+              "java": ">=21"
+            }
+          }
+          EOF
+          cat > src/main/resources/playerlod.mixins.json <<'EOF'
+          {
+            "required": true,
+            "package": "com.example.playerlod.mixin",
+            "compatibilityLevel": "JAVA_21",
+            "client": ["PlayerEntityRendererMixin"],
+            "injectors": { "defaultRequire": 1 }
+          }
+          EOF
+          cat > src/main/java/com/example/playerlod/mixin/PlayerEntityRendererMixin.java <<'EOF'
+          package com.example.playerlod.mixin;
+
+          import net.minecraft.client.network.AbstractClientPlayerEntity;
+          import net.minecraft.client.render.entity.PlayerEntityRenderer;
+          import net.minecraft.client.render.entity.state.PlayerEntityRenderState;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+          @Mixin(PlayerEntityRenderer.class)
+          public abstract class PlayerEntityRendererMixin {
+              private static final double LOD_DISTANCE_SQ = 16.0 * 16.0;
+
+              @Inject(
+                  method = "updateRenderState(Lnet/minecraft/client/network/AbstractClientPlayerEntity;Lnet/minecraft/client/render/entity/state/PlayerEntityRenderState;F)V",
+                  at = @At("TAIL")
+              )
+              private void playerlod$simplifyFarPlayers(AbstractClientPlayerEntity player,
+                                                        PlayerEntityRenderState state,
+                                                        float tickDelta,
+                                                        CallbackInfo ci) {
+                  if (state.squaredDistanceToCamera > LOD_DISTANCE_SQ) {
+                      state.hatVisible = false;
+                      state.jacketVisible = false;
+                      state.leftSleeveVisible = false;
+                      state.rightSleeveVisible = false;
+                      state.leftPantsLegVisible = false;
+                      state.rightPantsLegVisible = false;
+                      state.capeVisible = false;
+                  }
+              }
+          }
+          EOF
+      - name: Build
+        working-directory: proj
+        run: gradle build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: playerlod
+          path: proj/build/libs/playerlod-1.0.0.jar
